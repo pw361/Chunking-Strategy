@@ -10,14 +10,8 @@ from typing import Any
 import fitz  # PyMuPDF
 
 
-# ============================================================
-# 1. 加载配置与初始化路径
-# ============================================================
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIR / "config.json"
-
-
 def load_config() -> dict[str, Any]:
     """读取 config.json。"""
     if not CONFIG_PATH.exists():
@@ -25,45 +19,31 @@ def load_config() -> dict[str, Any]:
             f"未找到配置文件：{CONFIG_PATH}\n"
             "请将 config.json 放在 chunker.py 同一目录下。"
         )
-
     with CONFIG_PATH.open("r", encoding="utf-8") as file:
         return json.load(file)
-
-
 CONFIG = load_config()
-
 PROJECT_ROOT = Path(
     CONFIG["paths"]["project_root"]
 ).expanduser()
-
 if not PROJECT_ROOT.is_absolute():
     PROJECT_ROOT = (SCRIPT_DIR / PROJECT_ROOT).resolve()
-
-
 def resolve_path(path_text: str) -> Path:
     """绝对路径直接使用，相对路径相对于项目根目录解析。"""
     path = Path(path_text).expanduser()
-
     if path.is_absolute():
         return path
-
     return (PROJECT_ROOT / path).resolve()
-
-
 INPUT_DIR = resolve_path(CONFIG["paths"]["input_dir"])
 OUTPUT_DIR = resolve_path(CONFIG["paths"]["output_dir"])
 INTERMEDIATE_DIR = resolve_path(
     CONFIG["paths"]["intermediate_dir"]
 )
-
 OUTPUT_CONFIG = CONFIG["outputs"]
-
 CHUNKS_JSONL = OUTPUT_DIR / OUTPUT_CONFIG["jsonl"]
 CHUNKS_HTML = OUTPUT_DIR / OUTPUT_CONFIG["html"]
 PAGE_TEXT_JSONL = (
     INTERMEDIATE_DIR / OUTPUT_CONFIG["page_text_jsonl"]
 )
-
 CHUNK_SIZE = int(
     CONFIG.get("chunking", {}).get("chunk_size", 300)
 )
@@ -75,45 +55,34 @@ NORMALIZE_WHITESPACE = bool(
         "normalize_whitespace", True
     )
 )
-
 PDF_PREFIX = CONFIG["ids"]["pdf_prefix"]
 PDF_DIGITS = int(CONFIG["ids"]["pdf_digits"])
 CHUNK_DIGITS = int(CONFIG["ids"]["chunk_digits"])
-
 MIN_TEXT_WARNING = int(
     CONFIG["pdf"]["min_text_chars_per_page_warning"]
 )
-
 CONTINUE_ON_ERROR = bool(
     CONFIG["processing"]["continue_on_pdf_error"]
 )
 
-
 # ============================================================
 # 2. 多级标点定义
 # ============================================================
-
 # 一级：句末标点（分句只用这一级）
 PRIMARY_PUNCT = frozenset("。！？.!?")
-
 # 二级：分句标点（单句超长时的降级）
 SECONDARY_PUNCT = frozenset("；;：:")
-
 # 三级：短停顿标点（再降级）
 TERTIARY_PUNCT = frozenset("，,、")
-
 # 优先级从高到低
 PUNCT_LEVELS = (
     PRIMARY_PUNCT,
     SECONDARY_PUNCT,
     TERTIARY_PUNCT,
 )
-
-
 # ============================================================
 # 3. 文本处理
 # ============================================================
-
 def normalize_text(text: str) -> str:
     """
     清理 PDF 提取文本：
@@ -123,21 +92,16 @@ def normalize_text(text: str) -> str:
       4. 压缩多余空格
     """
     text = text.replace("\x00", "")
-
     if NORMALIZE_WHITESPACE:
         text = text.replace("\r\n", "\n")
         text = text.replace("\r", "\n")
         text = re.sub(r"[ \t]+", " ", text)
         text = text.replace("\n", "")
         text = text.strip()
-
     return text
-
-
 # ------------------------------------------------------------
 # 3.1 按指定标点集合切分（保留标点）
 # ------------------------------------------------------------
-
 def _split_by_punct_set(
     text: str,
     offset: int,
@@ -146,7 +110,6 @@ def _split_by_punct_set(
     """按给定标点集合把 text 切成 [(片段, start, end)]，片段保留标点。"""
     pieces: list[tuple[str, int, int]] = []
     buf_start = 0
-
     for i, ch in enumerate(text):
         if ch in punct_set:
             piece = text[buf_start : i + 1]
@@ -155,21 +118,16 @@ def _split_by_punct_set(
                     (piece, offset + buf_start, offset + i + 1)
                 )
             buf_start = i + 1
-
     if buf_start < len(text):
         piece = text[buf_start:]
         if piece.strip():
             pieces.append(
                 (piece, offset + buf_start, offset + len(text))
             )
-
     return pieces
-
-
 # ------------------------------------------------------------
 # 3.2 分句：只用第一级标点
 # ------------------------------------------------------------
-
 def split_into_sentences(
     text: str,
     offset: int = 0,
@@ -180,12 +138,9 @@ def split_into_sentences(
     返回 [(句文本, start, end), ...]，每句保留末尾标点。
     """
     return _split_by_punct_set(text, offset, PRIMARY_PUNCT)
-
-
 # ------------------------------------------------------------
 # 3.3 超长句的降级切割
 # ------------------------------------------------------------
-
 def _force_cut(
     text: str,
     offset: int,
@@ -200,8 +155,6 @@ def _force_cut(
                 (piece, offset + i, offset + i + len(piece))
             )
     return result
-
-
 def _split_long_sentence(
     text: str,
     offset: int,
@@ -244,32 +197,17 @@ def _split_long_sentence(
             )
         )
     return result
-
-
 # ------------------------------------------------------------
 # 3.4 合并 + 处理超限
 # ------------------------------------------------------------
-
 def _merge_with_overlap(
     sentences: list[tuple[str, int, int]],
     chunk_size: int,
     overlap: int,
 ) -> list[list[tuple[str, int, int]]]:
-    """
-    贪心合并句子，遇到超限分两种情况处理：
-
-    ① 单句本身 > chunk_size
-       → 先 flush 当前块，然后对该句降级切割；
-         切出的片段（除最后一片）直接输出，最后一片留在缓冲区。
-
-    ② 多句累加 > chunk_size
-       → 把当前句留给下一块（不塞进当前块），
-         当前块带尾部 overlap 封盘，新块头部 = 上一块尾部 overlap 字 + 当前句。
-    """
     chunks: list[list[tuple[str, int, int]]] = []
     current: list[tuple[str, int, int]] = []
     current_len = 0
-
     def flush(prev: list[tuple[str, int, int]]):
         """把 prev 作为一个 chunk 输出。"""
         if prev:
@@ -278,7 +216,6 @@ def _merge_with_overlap(
     for sent in sentences:
         s_text, s_start, s_end = sent
         s_len = len(s_text)
-
         # ---------- 情况 ①：单句超长 ----------
         if s_len > chunk_size:
             # 先 flush 已有的块
@@ -286,46 +223,37 @@ def _merge_with_overlap(
                 flush(current)
                 current = []
                 current_len = 0
-
             # 对这句降级切割（从二级标点开始）
             sub_pieces = _split_long_sentence(
                 s_text, s_start, chunk_size, level=1
             )
-
             # 除最后一片外，都直接成为独立 chunk
             for p in sub_pieces[:-1]:
                 chunks.append([p])
-
             # 最后一片留在缓冲区，等待后续合并
             if sub_pieces:
                 current = [sub_pieces[-1]]
                 current_len = len(sub_pieces[-1][0])
             continue
-
         # ---------- 情况 ②：累加超限 or 能塞下 ----------
         if not current:
             current = [sent]
             current_len = s_len
             continue
-
         if current_len + s_len <= chunk_size:
             # 能塞 → 合并
             current.append(sent)
             current_len += s_len
             continue
-
         # 塞不下 → 当前句留给下一块
         prev = current
         chunks.append(prev)
-
         # 计算尾部 overlap 长度
         prev_text = "".join(t for t, _, _ in prev)
         prev_end = prev[-1][2]
-
         # 保证新块不超限：最多能带多少字
         max_tail = max(0, chunk_size - s_len)
         tail_len = min(overlap, len(prev_text), max_tail)
-
         if tail_len > 0:
             tail_text = prev_text[-tail_len:]
             tail_start = prev_end - tail_len
@@ -335,33 +263,16 @@ def _merge_with_overlap(
         else:
             current = [sent]
             current_len = s_len
-
     # 结尾 flush
     if current:
         chunks.append(current)
-
     return chunks
-
-
-# ------------------------------------------------------------
-# 3.5 对外接口
-# ------------------------------------------------------------
 
 def split_text_into_chunks(
     text: str,
     chunk_size: int,
     overlap: int,
 ) -> list[tuple[str, int, int]]:
-    """
-    整篇文本 → chunk 列表。
-
-    流程：
-      1. 用第一级标点分句
-      2. 贪心合并；超限时按规则处理（降级切割 / 留到下一块）
-      3. 相邻 chunk 保留 overlap
-
-    返回 [(chunk 文本, start, end), ...]
-    """
     if not text:
         return []
 
@@ -396,7 +307,6 @@ def split_text_into_chunks(
             )
     return result
 
-
 def build_chunks_for_pdf(
     pages: list[dict[str, Any]],
     chunk_size: int,
@@ -410,7 +320,6 @@ def build_chunks_for_pdf(
         raise ValueError(
             "chunk_overlap 必须大于等于 0，且小于 chunk_size。"
         )
-
     # -------- 拼接全文 + 记录每页位置 --------
     parts: list[str] = []
     page_spans: list[tuple[int, int, int]] = []
@@ -440,7 +349,6 @@ def build_chunks_for_pdf(
     pieces = split_text_into_chunks(
         full_text, chunk_size, overlap
     )
-
     # -------- 反查页码 --------
     chunks: list[dict[str, Any]] = []
 
@@ -466,63 +374,47 @@ def build_chunks_for_pdf(
 
     return chunks
 
-
 # ============================================================
 # 4. JSONL 写入工具
 # ============================================================
-
 def write_jsonl_record(file, record: dict[str, Any]) -> None:
     file.write(
         json.dumps(record, ensure_ascii=False) + "\n"
     )
 
-
 # ============================================================
 # 5. PDF 扫描与逐页提取
 # ============================================================
-
 def discover_pdfs() -> list[Path]:
     if not INPUT_DIR.exists():
         raise FileNotFoundError(
             f"PDF 输入目录不存在：{INPUT_DIR}\n"
             "请检查 config.json 中的 paths.input_dir。"
         )
-
     pdf_files = [
         path
         for path in INPUT_DIR.rglob("*")
         if path.is_file() and path.suffix.lower() == ".pdf"
     ]
-
     pdf_files.sort(
         key=lambda path: path.relative_to(INPUT_DIR)
         .as_posix()
         .lower()
     )
-
     return pdf_files
-
-
 def make_pdf_id(index: int) -> str:
     return f"{PDF_PREFIX}_{index:0{PDF_DIGITS}d}"
-
-
 def make_chunk_id(pdf_id: str, chunk_index: int) -> str:
     return f"{pdf_id}_CHUNK_{chunk_index:0{CHUNK_DIGITS}d}"
-
-
 def extract_pdf_pages(
     pdf_path: Path,
     pdf_id: str,
     page_output_file,
 ) -> tuple[list[dict[str, Any]], int]:
     pages = []
-
     relative_path = pdf_path.relative_to(INPUT_DIR).as_posix()
-
     with fitz.open(pdf_path) as document:
         total_pages = len(document)
-
         for page_index in range(total_pages):
             page = document.load_page(page_index)
 
@@ -530,10 +422,8 @@ def extract_pdf_pages(
                 "text",
                 sort=bool(CONFIG["pdf"]["sort_text_blocks"]),
             )
-
             page_text = normalize_text(page_text)
             page_number = page_index + 1
-
             page_record = {
                 "pdf_id": pdf_id,
                 "pdf_name": pdf_path.name,
@@ -542,26 +432,19 @@ def extract_pdf_pages(
                 "page_text": page_text,
                 "char_count": len(page_text),
             }
-
             pages.append(page_record)
             write_jsonl_record(page_output_file, page_record)
-
     return pages, total_pages
-
-
 # ============================================================
 # 6. 生成 chunks.jsonl
 # ============================================================
-
 def build_chunks(
     pdf_files: list[Path],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     all_chunks: list[dict[str, Any]] = []
     pdf_manifest: list[dict[str, Any]] = []
-
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     INTERMEDIATE_DIR.mkdir(parents=True, exist_ok=True)
-
     with (
         CHUNKS_JSONL.open(
             "w", encoding="utf-8", newline="\n"
@@ -572,24 +455,20 @@ def build_chunks(
     ):
         for pdf_index, pdf_path in enumerate(pdf_files, start=1):
             pdf_id = make_pdf_id(pdf_index)
-
             relative_path = pdf_path.relative_to(
                 INPUT_DIR
             ).as_posix()
-
             try:
                 pages, total_pages = extract_pdf_pages(
                     pdf_path,
                     pdf_id,
                     page_file,
                 )
-
                 pdf_chunks = build_chunks_for_pdf(
                     pages,
                     CHUNK_SIZE,
                     CHUNK_OVERLAP,
                 )
-
                 for chunk_index, chunk in enumerate(
                     pdf_chunks, start=1
                 ):
@@ -606,12 +485,10 @@ def build_chunks(
                         "text": chunk["text"],
                         "char_count": len(chunk["text"]),
                     }
-
                     all_chunks.append(chunk_record)
                     write_jsonl_record(
                         chunks_file, chunk_record
                     )
-
                 pdf_manifest.append(
                     {
                         "pdf_id": pdf_id,
@@ -622,7 +499,6 @@ def build_chunks(
                         "status": "success",
                     }
                 )
-
             except Exception as exc:
                 pdf_manifest.append(
                     {
@@ -635,7 +511,6 @@ def build_chunks(
                         "error": str(exc),
                     }
                 )
-
                 if not CONTINUE_ON_ERROR:
                     raise
 
@@ -650,11 +525,6 @@ def build_chunks(
         )
 
     return all_chunks, pdf_manifest
-
-
-# ============================================================
-# 7. 生成 HTML 可视化页面
-# ============================================================
 
 def format_page_display(pages: list[int]) -> str:
     if not pages:
@@ -1279,10 +1149,6 @@ filterChunks();
     ) as file:
         file.write(document_html)
 
-
-# ============================================================
-# 8. 主程序入口
-# ============================================================
 
 def main() -> None:
     pdf_files = discover_pdfs()
