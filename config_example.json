@@ -1,0 +1,41 @@
+{
+  "paths": {
+    "project_root": "xxxxx",
+    "input_dir": ".\\resource\\files_1",
+    "output_dir": ".\\output",
+    "intermediate_dir": ".\\intermediate"
+  },
+  "pdf": {
+    "sort_text_blocks": true,
+    "min_text_chars_per_page_warning": 20
+  },
+  "chunking": {
+    "strategy": "paragraph",
+    "chunk_size": 300,
+    "chunk_overlap": 50,
+    "normalize_whitespace": true
+  },
+  "ids": {
+    "pdf_prefix": "PDF",
+    "pdf_digits": 4,
+    "chunk_digits": 4
+  },
+  "outputs": {
+    "jsonl": "chunks.jsonl",
+    "html": "chunks_preview.html",
+    "page_text_jsonl": "page_text.jsonl"
+  },
+  "preview": {
+    "title": "PDF Chunk Preview",
+    "initial_visible_chunks_per_pdf": 0
+  },
+  "processing": {
+    "continue_on_pdf_error": true
+  },
+  "logging": {
+    "level": "INFO"
+  },
+  
+    "python_path": "xxxx"
+  
+}
